@@ -72,8 +72,19 @@ def run_backup(job):
     }
 
     try:
-        # Initialize repository if it doesn't exist
-        subprocess.run(['restic', 'init'], env=env, check=False)
+        # Check if repository exists before initializing
+        check_repo_command = ['restic', 'snapshots']
+        check_process = subprocess.run(check_repo_command, env=env, capture_output=True, text=True)
+        
+        if check_process.returncode != 0 and "unable to open config file" in check_process.stderr:
+            # Repository doesn't exist, so initialize it
+            init_process = subprocess.run(['restic', 'init'], env=env, capture_output=True, text=True, check=True)
+            print(f"Initialized new repository for job: {jobname}")
+        elif check_process.returncode != 0:
+            # Some other error occurred
+            raise subprocess.CalledProcessError(check_process.returncode, check_process.args, check_process.stderr)
+        else:
+            print(f"Using existing repository for job: {jobname}")
 
         # Run backup for each source
         total_files = 0
@@ -151,7 +162,6 @@ def run_backup(job):
         log_error(jobname, error_message)
         send_notification("Backup Failed", f"Job {jobname}: Backup failed. Check error logs for details.")
         return False
-
 def retry_backup(job):
     """Retry a failed backup job with increasing intervals."""
     retry_intervals = [1, 2, 5, 10, 20, 30, 60]  # in minutes
