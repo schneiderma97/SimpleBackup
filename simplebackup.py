@@ -162,6 +162,7 @@ def run_backup(job):
         log_error(jobname, error_message)
         send_notification("Backup Failed", f"Job {jobname}: Backup failed. Check error logs for details.")
         return False
+    
 def retry_backup(job):
     """Retry a failed backup job with increasing intervals."""
     retry_intervals = [1, 2, 5, 10, 20, 30, 60]  # in minutes
