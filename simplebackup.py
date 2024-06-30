@@ -1,24 +1,28 @@
 import json
 import subprocess
 import time
-import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from croniter import croniter
 from win10toast import ToastNotifier
 import argparse
+import os
+import logging
 
 def load_config(config_file):
     """Load and parse the JSON configuration file."""
     with open(config_file, 'r') as f:
         return json.load(f)
 
-def setup_logger(jobname):
-    """Set up a logger for the given job name."""
+def log_error(jobname, error_message):
+    """Log an error message to a file."""
+    logs_dir = os.path.join(os.getcwd(), 'logs')
+    os.makedirs(logs_dir, exist_ok=True)
+    
+    log_file = os.path.join(logs_dir, f"errorlog_{jobname}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log")
+    
     logger = logging.getLogger(jobname)
     logger.setLevel(logging.ERROR)
     
-    # Create a unique log file for each job execution
-    log_file = f"errorlog_{jobname}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
     file_handler = logging.FileHandler(log_file)
     file_handler.setLevel(logging.ERROR)
     
@@ -26,14 +30,33 @@ def setup_logger(jobname):
     file_handler.setFormatter(formatter)
     
     logger.addHandler(file_handler)
-    return logger
+    
+    logger.error(error_message)
+    logger.removeHandler(file_handler)
+    file_handler.close()
+
+def cleanup_old_logs():
+    """Clean up log files older than 2 months."""
+    logs_dir = os.path.join(os.getcwd(), 'logs')
+    if not os.path.exists(logs_dir):
+        return
+    
+    two_months_ago = datetime.now() - timedelta(days=60)
+    
+    for filename in os.listdir(logs_dir):
+        file_path = os.path.join(logs_dir, filename)
+        if os.path.isfile(file_path):
+            file_modified = datetime.fromtimestamp(os.path.getmtime(file_path))
+            if file_modified < two_months_ago:
+                os.remove(file_path)
+                print(f"Removed old log file: {filename}")
 
 def send_notification(title, message):
     """Send a Windows notification with the given title and message."""
     toaster = ToastNotifier()
     toaster.show_toast(title, message, duration=10)
 
-def run_backup(job, logger):
+def run_backup(job):
     """Execute a backup job and handle notifications."""
     sources = job['sources']
     destination = job['destination']
@@ -94,8 +117,12 @@ def run_backup(job, logger):
             if process.returncode != 0:
                 stderr = process.stderr.read()
                 if "no space left on device" in stderr.lower():
-                    send_notification("Backup Destination Full", f"Job {jobname}: Backup destination is full. Backup failed.")
+                    error_message = f"Job {jobname}: Backup destination is full. Backup failed."
+                    send_notification("Backup Destination Full", error_message)
+                    log_error(jobname, error_message)
                     raise subprocess.CalledProcessError(process.returncode, process.args, stderr)
+                error_message = f"Error in backup job {jobname}: {stderr}"
+                log_error(jobname, error_message)
                 raise subprocess.CalledProcessError(process.returncode, process.args, stderr)
 
         # Apply retention policy
@@ -121,21 +148,23 @@ def run_backup(job, logger):
     except subprocess.CalledProcessError as e:
         error_message = f"Error in backup job {jobname}: {str(e)}"
         print(error_message)
-        logger.error(error_message)
+        log_error(jobname, error_message)
         send_notification("Backup Failed", f"Job {jobname}: Backup failed. Check error logs for details.")
         return False
 
-def retry_backup(job, logger):
+def retry_backup(job):
     """Retry a failed backup job with increasing intervals."""
     retry_intervals = [1, 2, 5, 10, 20, 30, 60]  # in minutes
     for interval in retry_intervals:
         print(f"Retrying backup job {job['jobname']} in {interval} minutes...")
         time.sleep(interval * 60)
-        if run_backup(job, logger):
+        if run_backup(job):
             print(f"Retry successful for job {job['jobname']}")
             return True
     print(f"All retries failed for job {job['jobname']}")
-    send_notification("Backup Retries Exhausted", f"Job {job['jobname']}: All backup retries failed. Check error logs for details.")
+    error_message = f"Job {job['jobname']}: All backup retries failed."
+    log_error(job['jobname'], error_message)
+    send_notification("Backup Retries Exhausted", f"{error_message} Check error logs for details.")
     return False
 
 def get_next_job(config):
@@ -162,11 +191,13 @@ def main():
     config_file = 'backup_config.json'
     config = load_config(config_file)
 
+    # Clean up old logs on startup
+    cleanup_old_logs()
+
     if args.backup_on_start:
         print("Performing backup on start...")
         for job in config['backupjobs']:
-            logger = setup_logger(job['jobname'])
-            run_backup(job, logger)
+            run_backup(job)
     
     while True:
         # Load the configuration file at each iteration
@@ -185,9 +216,11 @@ def main():
             print(f"Waiting {wait_time:.2f} seconds for next job: {next_job['jobname']}")
             time.sleep(wait_time)
         
-        logger = setup_logger(next_job['jobname'])
-        if not run_backup(next_job, logger):
-            retry_backup(next_job, logger)
+        if not run_backup(next_job):
+            retry_backup(next_job)
+
+        # Clean up old logs after each backup job
+        cleanup_old_logs()
 
 if __name__ == "__main__":
     main()
