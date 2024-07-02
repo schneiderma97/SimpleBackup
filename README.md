@@ -1,15 +1,18 @@
 # SimpleBackup
 
-This Python script automates backups using Restic, providing a flexible and robust solution for managing multiple backup jobs with customizable schedules, retention policies, and exclude patterns.
+This Python script automates backups using Restic, providing a flexible and robust solution for managing multiple backup jobs with customizable schedules, retention policies, exclude patterns, and compression levels.
 
 ## Features
 
 - Multiple backup jobs with individual schedules
 - Customizable retention policies
 - Exclude patterns for ignoring specific files or directories
+- Compression level control for each backup job
+- WebDAV support using rclone
 - Windows notifications for backup status
 - Error logging and retry mechanism
 - Option to perform backup on start
+- Real-time progress display during backup
 
 ## Installation
 
@@ -17,9 +20,11 @@ This Python script automates backups using Restic, providing a flexible and robu
 
 2. Install Restic by following the instructions on the [official Restic website](https://restic.net/#installation).
 
-3. Clone this repository or download the script and requirements file.
+3. If you plan to use WebDAV, install rclone by following the instructions on the [official rclone website](https://rclone.org/install/).
 
-4. Install the required Python packages:
+4. Clone this repository or download the script and requirements file.
+
+5. Install the required Python packages:
 
    ```
    pip install -r requirements.txt
@@ -48,12 +53,30 @@ This Python script automates backups using Restic, providing a flexible and robu
            "**/.git",
            "**/*.tmp"
          ],
+         "compression_level": "auto",
          "retention": {
            "hours": 24,
            "days": 7,
            "weeks": 4,
            "months": 6,
            "years": 1
+         }
+       },
+       {
+         "jobname": "WebDAV Backup",
+         "sources": ["/path/to/important_data"],
+         "destination": "https://example.com/webdav/backup",
+         "password": "your_restic_password",
+         "use_rclone": true,
+         "webdav_user": "your_webdav_username",
+         "webdav_password": "your_webdav_password",
+         "backup_interval": "0 3 * * *",
+         "exclude_patterns": ["**/*.tmp", "**/*.log"],
+         "compression_level": "max",
+         "retention": {
+           "days": 7,
+           "weeks": 4,
+           "months": 6
          }
        }
      ]
@@ -66,7 +89,15 @@ This Python script automates backups using Restic, providing a flexible and robu
 
 4. The `exclude_patterns` array specifies patterns for files or directories to exclude from the backup.
 
-5. The `retention` object specifies how many snapshots to keep for different time periods. You can include or omit any of the time periods (hours, days, weeks, months, years) as needed.
+5. The `compression_level` option allows you to set the compression level for each job. Valid values are:
+   - "auto" (default if not specified)
+   - "off" (no compression)
+   - "max" (maximum compression)
+   - An integer from 1 to 9 (1 is fastest, 9 is highest compression)
+
+6. The `retention` object specifies how many snapshots to keep for different time periods. You can include or omit any of the time periods (hours, days, weeks, months, years) as needed.
+
+7. For WebDAV backups, set `use_rclone` to `true` and provide the necessary WebDAV credentials.
 
 ### Retention Policy
 
@@ -118,6 +149,7 @@ The script will:
 - Read the configuration file at each backup interval.
 - Determine the next job to run based on the current time and job schedules.
 - Execute the backup job when it's time.
+- Display real-time progress of the backup operation.
 - Apply the retention policy after each successful backup.
 - Retry failed backups with increasing intervals.
 - Display Windows notifications for important events.
@@ -132,18 +164,18 @@ You can modify the `backup_config.json` file at any time, and the changes will t
 
 3. **Backup Execution**: The `run_backup` function performs the following steps:
    - Initializes the Restic repository if it doesn't exist.
-   - Runs the Restic backup command for each source, applying exclude patterns.
-   - Monitors and displays the backup progress.
+   - Runs the Restic backup command for each source, applying exclude patterns and compression settings.
+   - Monitors and displays the backup progress in real-time.
    - Applies the retention policy after a successful backup.
 
 4. **Error Handling**: If a backup fails, the script logs the error and sends a Windows notification. It then attempts to retry the backup using increasing time intervals.
 
 5. **Notifications**: The script sends Windows notifications for events such as:
-   - Successful backups (including number of files and total size)
+   - Successful backups
    - Failed backups
    - Backup destination full
    - All retry attempts exhausted
 
 6. **Logging**: Error logs are created for each job execution, providing detailed information for troubleshooting.
 
-This script provides a flexible and robust solution for managing multiple Restic backup jobs with customizable schedules, retention policies, and exclude patterns.
+This script provides a flexible and robust solution for managing multiple Restic backup jobs with customizable schedules, retention policies, exclude patterns, and compression levels, supporting both local and WebDAV destinations.

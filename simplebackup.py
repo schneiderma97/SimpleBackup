@@ -91,6 +91,7 @@ def run_backup(job):
     webdav_user = job.get('webdav_user', '')
     webdav_password = job.get('webdav_password', '')
     use_rclone = job.get('use_rclone', False)
+    compression_level = job.get('compression_level', 'auto')
 
     print(f"Starting backup job: {jobname}")
     
@@ -143,6 +144,8 @@ pass = {obscured_password}
             
             # Construct the restic command with exclude patterns
             restic_command = ['restic', '-r', repository, 'backup', source, '--json']
+            if compression_level != 'auto':
+                restic_command.extend(['--compression', compression_level])
             for pattern in exclude_patterns:
                 restic_command.extend(['--exclude', pattern])
 
