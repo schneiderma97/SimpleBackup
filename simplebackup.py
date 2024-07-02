@@ -6,9 +6,11 @@ from datetime import datetime, timedelta
 from croniter import croniter
 from win10toast import ToastNotifier
 import argparse
-import os
 import sys
 import logging
+import base64
+import os
+import tempfile
 
 def load_config(config_file):
     """Load and parse the JSON configuration file."""
@@ -56,7 +58,7 @@ def cleanup_old_logs():
 def send_notification(title, message):
     """Send a Windows notification with the given title and message."""
     toaster = ToastNotifier()
-    toaster.show_toast(title, message, duration=10)
+    toaster.show_toast(title, message, duration=10, threaded=True)
 
 def human_readable_size(size_bytes):
     """Convert size in bytes to a human-readable format"""
@@ -67,6 +69,17 @@ def human_readable_size(size_bytes):
     p = math.pow(1024, i)
     s = round(size_bytes / p, 2)
     return f"{s} {size_name[i]}"
+
+
+
+def obscure_password(password):
+    """Obscure the password using rclone's obscure command."""
+    try:
+        result = subprocess.run(['rclone', 'obscure', password], capture_output=True, text=True, check=True)
+        return result.stdout.strip()
+    except subprocess.CalledProcessError as e:
+        print(f"Error obscuring password: {e}")
+        return password  # Return original password if obscuring fails
 
 def run_backup(job):
     """Execute a backup job and handle notifications."""
@@ -81,29 +94,42 @@ def run_backup(job):
 
     print(f"Starting backup job: {jobname}")
     
-    env = {
-        'RESTIC_PASSWORD': password,
-        'RESTIC_REPOSITORY': destination
-    }
+    env = os.environ.copy()
+    env['RESTIC_PASSWORD'] = password
 
-    # If WebDAV credentials are provided, set them in the environment
-    if webdav_user and webdav_password:
-        env['WEBDAV_USERNAME'] = webdav_user
-        env['WEBDAV_PASSWORD'] = webdav_password
+    if use_rclone:
+        # Obscure the WebDAV password using rclone
+        obscured_password = obscure_password(webdav_password)
+        
+        # Create a temporary rclone config file
+        with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.conf') as temp_config:
+            temp_config.write(f"""
+[webdav]
+type = webdav
+url = {destination}
+vendor = other
+user = {webdav_user}
+pass = {obscured_password}
+""")
+            temp_config_path = temp_config.name
+
+        # Set the RCLONE_CONFIG environment variable to use our temporary config
+        env['RCLONE_CONFIG'] = temp_config_path
+
+        # Set Restic repository to use rclone
+        repository = "rclone:webdav:Backups/Restic_Test"
+    else:
+        # For local repositories, add the 'local:' prefix
+        repository = f"local:{destination}"
 
     try:
-        # Initialize the repository if using rclone with WebDAV
-        if use_rclone:
-            rclone_dest = f"webdav:{destination}"
-            env['RESTIC_REPOSITORY'] = rclone_dest
-
         # Check if repository exists before initializing
-        check_repo_command = ['restic', 'snapshots']
+        check_repo_command = ['restic', '-r', repository, 'snapshots']
         check_process = subprocess.run(check_repo_command, env=env, capture_output=True, text=True)
         
         if check_process.returncode != 0 and "unable to open config file" in check_process.stderr:
             # Repository doesn't exist, so initialize it
-            init_process = subprocess.run(['restic', 'init'], env=env, capture_output=True, text=True, check=True)
+            init_process = subprocess.run(['restic', '-r', repository, 'init'], env=env, capture_output=True, text=True, check=True)
             print(f"Initialized new repository for job: {jobname}")
         elif check_process.returncode != 0:
             # Some other error occurred
@@ -112,14 +138,11 @@ def run_backup(job):
             print(f"Using existing repository for job: {jobname}")
 
         # Run backup for each source
-        total_files = 0
-        total_size = 0
-
         for source in sources:
             print(f"Backing up source: {source}")
             
             # Construct the restic command with exclude patterns
-            restic_command = ['restic', 'backup', source, '--json']
+            restic_command = ['restic', '-r', repository, 'backup', source, '--json']
             for pattern in exclude_patterns:
                 restic_command.extend(['--exclude', pattern])
 
@@ -131,8 +154,8 @@ def run_backup(job):
                 universal_newlines=True
             )
 
-            # Process backup progress
-            last_progress = ""
+            # Process and display progress
+            last_percent = 0
             while True:
                 output = process.stdout.readline()
                 if output == '' and process.poll() is not None:
@@ -141,38 +164,29 @@ def run_backup(job):
                     try:
                         data = json.loads(output.strip())
                         if data['message_type'] == 'status':
-                            total_files += data.get('total_files', 0)
-                            total_size += data.get('total_bytes', 0)
-                            percent_done = data.get('percent_done', 0) * 100  # Convert to percentage
-                            bytes_done = data.get('bytes_done', 0)
-                            total_bytes = data.get('total_bytes', 0)
-                            progress = (f"\rSource: {source}, "
-                                        f"Files: {data.get('files_done', 'N/A')}/{data.get('total_files', 'N/A')}, "
-                                        f"Size: {human_readable_size(bytes_done)}/{human_readable_size(total_bytes)}, "
-                                        f"Progress: {percent_done:.2f}%")
-                            if progress != last_progress:
-                                sys.stdout.write(progress.ljust(100))  # Pad with spaces to overwrite previous output
+                            percent_done = data['percent_done'] * 100
+                            if percent_done - last_percent >= 1 or percent_done == 100:  # Update every 1% or at 100%
+                                last_percent = percent_done
+                                files_done = data['files_done']
+                                total_files = data['total_files']
+                                bytes_done = human_readable_size(data['bytes_done'])
+                                total_bytes = human_readable_size(data['total_bytes'])
+                                
+                                progress = f"\rProgress: {percent_done:.2f}% | Files: {files_done}/{total_files} | Size: {bytes_done}/{total_bytes}"
+                                sys.stdout.write(progress)
                                 sys.stdout.flush()
-                                last_progress = progress
                     except json.JSONDecodeError:
                         print(output.strip())
 
-            sys.stdout.write('\n')  # Move to the next line after the progress is complete
-
-            # Check for errors
+            # Check for any errors
             if process.returncode != 0:
                 stderr = process.stderr.read()
-                if "no space left on device" in stderr.lower():
-                    error_message = f"Job {jobname}: Backup destination is full. Backup failed."
-                    send_notification("Backup Destination Full", error_message)
-                    log_error(jobname, error_message)
-                    raise subprocess.CalledProcessError(process.returncode, process.args, stderr)
-                error_message = f"Error in backup job {jobname}: {stderr}"
-                log_error(jobname, error_message)
-                raise subprocess.CalledProcessError(process.returncode, process.args, stderr)
+                raise subprocess.CalledProcessError(process.returncode, restic_command, stderr)
+
+            print("\nBackup completed successfully.")
 
         # Apply retention policy
-        retention_args = []
+        retention_args = ['restic', '-r', repository, 'forget', '--prune']
         if job['retention'].get('hours', 0) > 0:
             retention_args.extend(['--keep-hourly', str(job['retention']['hours'])])
         if job['retention'].get('days', 0) > 0:
@@ -184,38 +198,37 @@ def run_backup(job):
         if job['retention'].get('years', 0) > 0:
             retention_args.extend(['--keep-yearly', str(job['retention']['years'])])
 
-        subprocess.run(['restic', 'forget', '--prune'] + retention_args, env=env, check=True)
+        subprocess.run(retention_args, env=env, check=True)
 
         print(f"Backup job completed: {jobname}")
-        send_notification("Backup Successful", 
-                          f"Job {jobname}: Backup completed successfully.\n"
-                          f"Total Files: {total_files}, Total Size: {total_size/1024/1024:.2f} MB")
+        send_notification("Backup Successful", f"Job {jobname}: Backup completed successfully.")
         return True
+
     except subprocess.CalledProcessError as e:
         error_message = f"Error in backup job {jobname}:\n"
         error_message += f"Return code: {e.returncode}\n"
         error_message += f"Command: {e.cmd}\n"
-        if hasattr(e, 'stdout') and e.stdout:
+        if e.stdout:
             error_message += f"stdout: {e.stdout}\n"
-        if hasattr(e, 'stderr') and e.stderr:
+        if e.stderr:
             error_message += f"stderr: {e.stderr}\n"
         print(error_message)
         log_error(jobname, error_message)
-        try:
-            send_notification("Backup Failed", f"Job {jobname}: Backup failed. Check error logs for details.")
-        except Exception as notify_error:
-            print(f"Failed to send notification: {str(notify_error)}")
+        send_notification("Backup Failed", f"Job {jobname}: Backup failed. Check error logs for details.")
         return False
+
     except Exception as e:
         error_message = f"Unexpected error in backup job {jobname}: {str(e)}"
         print(error_message)
         log_error(jobname, error_message)
-        try:
-            send_notification("Backup Failed", f"Job {jobname}: Backup failed. Check error logs for details.")
-        except Exception as notify_error:
-            print(f"Failed to send notification: {str(notify_error)}")
+        send_notification("Backup Failed", f"Job {jobname}: Backup failed. Check error logs for details.")
         return False
-    
+
+    finally:
+        if use_rclone:
+            # Clean up the temporary config file
+            os.unlink(temp_config_path)
+
 def retry_backup(job):
     """Retry a failed backup job with increasing intervals."""
     retry_intervals = [1, 2, 5, 10, 20, 30, 60]  # in minutes
