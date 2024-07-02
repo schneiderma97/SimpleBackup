@@ -1,4 +1,5 @@
 import json
+import math
 import subprocess
 import time
 from datetime import datetime, timedelta
@@ -57,6 +58,15 @@ def send_notification(title, message):
     toaster = ToastNotifier()
     toaster.show_toast(title, message, duration=10)
 
+def human_readable_size(size_bytes):
+    """Convert size in bytes to a human-readable format"""
+    if size_bytes == 0:
+        return "0B"
+    size_name = ("B", "KB", "MB", "GB", "TB", "PB", "EB", "ZB", "YB")
+    i = int(math.floor(math.log(size_bytes, 1024)))
+    p = math.pow(1024, i)
+    s = round(size_bytes / p, 2)
+    return f"{s} {size_name[i]}"
 
 def run_backup(job):
     """Execute a backup job and handle notifications."""
@@ -134,9 +144,11 @@ def run_backup(job):
                             total_files += data.get('total_files', 0)
                             total_size += data.get('total_bytes', 0)
                             percent_done = data.get('percent_done', 0) * 100  # Convert to percentage
+                            bytes_done = data.get('bytes_done', 0)
+                            total_bytes = data.get('total_bytes', 0)
                             progress = (f"\rSource: {source}, "
                                         f"Files: {data.get('files_done', 'N/A')}/{data.get('total_files', 'N/A')}, "
-                                        f"Size: {data.get('bytes_done', 'N/A'):,}/{data.get('total_bytes', 'N/A'):,} bytes, "
+                                        f"Size: {human_readable_size(bytes_done)}/{human_readable_size(total_bytes)}, "
                                         f"Progress: {percent_done:.2f}%")
                             if progress != last_progress:
                                 sys.stdout.write(progress.ljust(100))  # Pad with spaces to overwrite previous output
