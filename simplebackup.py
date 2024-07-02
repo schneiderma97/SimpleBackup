@@ -56,6 +56,7 @@ def send_notification(title, message):
     toaster = ToastNotifier()
     toaster.show_toast(title, message, duration=10)
 
+
 def run_backup(job):
     """Execute a backup job and handle notifications."""
     sources = job['sources']
@@ -63,6 +64,9 @@ def run_backup(job):
     password = job['password']
     jobname = job['jobname']
     exclude_patterns = job.get('exclude_patterns', [])
+    webdav_user = job.get('webdav_user', '')
+    webdav_password = job.get('webdav_password', '')
+    use_rclone = job.get('use_rclone', False)
 
     print(f"Starting backup job: {jobname}")
     
@@ -71,7 +75,17 @@ def run_backup(job):
         'RESTIC_REPOSITORY': destination
     }
 
+    # If WebDAV credentials are provided, set them in the environment
+    if webdav_user and webdav_password:
+        env['WEBDAV_USERNAME'] = webdav_user
+        env['WEBDAV_PASSWORD'] = webdav_password
+
     try:
+        # Initialize the repository if using rclone with WebDAV
+        if use_rclone:
+            rclone_dest = f"webdav:{destination}"
+            env['RESTIC_REPOSITORY'] = rclone_dest
+
         # Check if repository exists before initializing
         check_repo_command = ['restic', 'snapshots']
         check_process = subprocess.run(check_repo_command, env=env, capture_output=True, text=True)
