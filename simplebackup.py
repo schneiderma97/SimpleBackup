@@ -6,6 +6,7 @@ from croniter import croniter
 from win10toast import ToastNotifier
 import argparse
 import os
+import sys
 import logging
 
 def load_config(config_file):
@@ -121,6 +122,7 @@ def run_backup(job):
             )
 
             # Process backup progress
+            last_progress = ""
             while True:
                 output = process.stdout.readline()
                 if output == '' and process.poll() is not None:
@@ -131,12 +133,19 @@ def run_backup(job):
                         if data['message_type'] == 'status':
                             total_files += data.get('total_files', 0)
                             total_size += data.get('total_bytes', 0)
-                            print(f"Source: {source}, "
-                                  f"Files: {data.get('files_done', 'N/A')}/{data.get('total_files', 'N/A')}, "
-                                  f"Size: {data.get('bytes_done', 'N/A')}/{data.get('total_bytes', 'N/A')} bytes, "
-                                  f"Progress: {data.get('percent_done', 'N/A')}%")
+                            percent_done = data.get('percent_done', 0) * 100  # Convert to percentage
+                            progress = (f"\rSource: {source}, "
+                                        f"Files: {data.get('files_done', 'N/A')}/{data.get('total_files', 'N/A')}, "
+                                        f"Size: {data.get('bytes_done', 'N/A'):,}/{data.get('total_bytes', 'N/A'):,} bytes, "
+                                        f"Progress: {percent_done:.2f}%")
+                            if progress != last_progress:
+                                sys.stdout.write(progress.ljust(100))  # Pad with spaces to overwrite previous output
+                                sys.stdout.flush()
+                                last_progress = progress
                     except json.JSONDecodeError:
                         print(output.strip())
+
+            sys.stdout.write('\n')  # Move to the next line after the progress is complete
 
             # Check for errors
             if process.returncode != 0:
@@ -171,10 +180,28 @@ def run_backup(job):
                           f"Total Files: {total_files}, Total Size: {total_size/1024/1024:.2f} MB")
         return True
     except subprocess.CalledProcessError as e:
-        error_message = f"Error in backup job {jobname}: {str(e)}"
+        error_message = f"Error in backup job {jobname}:\n"
+        error_message += f"Return code: {e.returncode}\n"
+        error_message += f"Command: {e.cmd}\n"
+        if hasattr(e, 'stdout') and e.stdout:
+            error_message += f"stdout: {e.stdout}\n"
+        if hasattr(e, 'stderr') and e.stderr:
+            error_message += f"stderr: {e.stderr}\n"
         print(error_message)
         log_error(jobname, error_message)
-        send_notification("Backup Failed", f"Job {jobname}: Backup failed. Check error logs for details.")
+        try:
+            send_notification("Backup Failed", f"Job {jobname}: Backup failed. Check error logs for details.")
+        except Exception as notify_error:
+            print(f"Failed to send notification: {str(notify_error)}")
+        return False
+    except Exception as e:
+        error_message = f"Unexpected error in backup job {jobname}: {str(e)}"
+        print(error_message)
+        log_error(jobname, error_message)
+        try:
+            send_notification("Backup Failed", f"Job {jobname}: Backup failed. Check error logs for details.")
+        except Exception as notify_error:
+            print(f"Failed to send notification: {str(notify_error)}")
         return False
     
 def retry_backup(job):
