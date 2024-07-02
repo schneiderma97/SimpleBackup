@@ -266,8 +266,20 @@ pass = {obscured_password}
 
     @staticmethod
     def send_notification(title, message):
-        toaster = ToastNotifier()
-        toaster.show_toast(title, message, duration=10, threaded=True)
+        try:
+            toaster = ToastNotifier()
+            toaster.show_toast(title, message, duration=10, threaded=True)
+        except Exception as e:
+            print(f"Failed to send Windows notification: {str(e)}")
+            print(f"Notification: {title} - {message}")
+            
+            # Log the notification to a file as a fallback
+            log_dir = os.path.join(os.getcwd(), 'logs')
+            os.makedirs(log_dir, exist_ok=True)
+            log_file = os.path.join(log_dir, 'notifications.log')
+            
+            with open(log_file, 'a') as f:
+                f.write(f"{datetime.now()} - {title}: {message}\n")
 
     @staticmethod
     def human_readable_size(size_bytes):
@@ -333,7 +345,14 @@ def main():
     print(f"Loading config from: {config_file}")  # Debug output
     backup_manager = BackupManager(config_file)
     print("BackupManager created")  # Debug output
-    backup_manager.run(args.backup_on_start)
+    
+    try:
+        backup_manager.run(args.backup_on_start)
+    except Exception as e:
+        error_message = f"An unexpected error occurred: {str(e)}\n{traceback.format_exc()}"
+        print(error_message)
+        backup_manager.log_error("main", error_message)
+        backup_manager.send_notification("Backup Script Error", "An unexpected error occurred. Check error logs for details.")
 
 if __name__ == "__main__":
     print("Script is being run directly")  # Debug output
